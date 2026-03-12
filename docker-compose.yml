@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  firestore-emulator:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:latest
+    command: >
+      gcloud emulators firestore start
+      --host-port=0.0.0.0:8081
+      --project=aidream-dev
+    ports:
+      - '8081:8081'
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - '8080:8080'
+    environment:
+      - PORT=8080
+      - NODE_ENV=development
+      - GCP_PROJECT_ID=aidream-dev
+      - GCP_REGION=us-central1
+      - GCS_BUCKET=aidream-media
+      - CLOUD_TASKS_QUEUE=aidream-pipeline
+      - CLOUD_TASKS_LOCATION=us-central1
+      - BACKEND_URL=http://localhost:8080
+      - FIREBASE_PROJECT_ID=aidream-dev
+      - VERTEX_AI_MODEL=veo-2.0-generate-001
+      - FREE_CREDITS=20
+      - MAX_PHOTOS_PER_PROJECT=20
+      - MIN_PHOTOS_PER_PROJECT=5
+      - MAX_CONCURRENT_PROJECTS=3
+      - CORS_ORIGIN=http://localhost:3000
+      - FIRESTORE_EMULATOR_HOST=firestore-emulator:8081
+    depends_on:
+      - firestore-emulator
