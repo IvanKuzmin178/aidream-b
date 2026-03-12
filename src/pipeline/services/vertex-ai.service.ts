@@ -31,6 +31,13 @@ export class VertexAiService implements OnModuleInit {
     const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${this.model}:predictLongRunning`;
 
     const body = this.buildRequestBody(scene);
+    this.logger.log(`Veo request body: ${JSON.stringify(body, null, 2)}`);
+
+    for (const photo of scene.inputPhotos) {
+      const exists = await this.storageService.fileExists(photo);
+      this.logger.log(`File check: ${photo} exists=${exists}`);
+    }
+
     const token = await this.getAccessToken();
 
     const response = await fetch(endpoint, {
@@ -93,12 +100,16 @@ export class VertexAiService implements OnModuleInit {
   private buildRequestBody(scene: SceneEntity) {
     const inputImage = scene.inputPhotos[0];
     const lastImage = scene.inputPhotos.length > 1 ? scene.inputPhotos[1] : undefined;
+    const bucket = this.configService.get('GCS_BUCKET');
 
     const request: Record<string, any> = {
       instances: [
         {
           prompt: scene.prompt,
-          image: { gcsUri: `gs://${this.configService.get('GCS_BUCKET')}/${inputImage}` },
+          image: {
+            gcsUri: `gs://${bucket}/${inputImage}`,
+            mimeType: this.guessMimeType(inputImage),
+          },
         },
       ],
       parameters: {
@@ -109,11 +120,25 @@ export class VertexAiService implements OnModuleInit {
 
     if (lastImage && scene.generationMode === 'first_last_frame') {
       request.instances[0].lastFrame = {
-        image: { gcsUri: `gs://${this.configService.get('GCS_BUCKET')}/${lastImage}` },
+        image: {
+          gcsUri: `gs://${bucket}/${lastImage}`,
+          mimeType: this.guessMimeType(lastImage),
+        },
       };
     }
 
     return request;
+  }
+
+  private guessMimeType(path: string): string {
+    const ext = path.split('.').pop()?.toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      webp: 'image/webp',
+    };
+    return mimeTypes[ext || ''] || 'image/jpeg';
   }
 
   private async getAccessToken(): Promise<string> {

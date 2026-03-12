@@ -475,29 +475,93 @@ Storyboard выбирает до 8 лучших фото (по `qualityScore` и
 
 ### Шаг 9: Аутентификация для локальной разработки
 
-Application Default Credentials (ADC) — файл с токеном, который GCP SDK-библиотеки (Firestore, Cloud Storage, Vertex AI) используют для авторизации. Без ADC приложение не сможет обращаться к GCP-сервисам при локальном запуске.
+Для локального запуска бэкенда нужны credentials, чтобы GCP SDK (Firestore, Cloud Storage, Vertex AI) мог авторизоваться. Есть два способа:
+
+#### Способ A: Service Account Key (рекомендуется)
+
+Service Account — это «технический аккаунт» для вашего приложения. JSON-ключ содержит `client_email`, который нужен для подписи Signed URL (загрузка/скачивание файлов из Cloud Storage). Без него `getSignedUrl()` выдаст ошибку `SigningError: Cannot sign data without client_email`.
+
+**В Cloud Shell** создайте service account и скачайте ключ:
 
 ```bash
-# Эта команда откроет браузер для OAuth-логина и сохранит токен
-# в ~/.config/gcloud/application_default_credentials.json
+# Создать service account
+gcloud iam service-accounts create aidream-backend \
+  --display-name="AIDream Backend" \
+  --project=aidream-dev
+
+# Выдать нужные роли
+gcloud projects add-iam-policy-binding aidream-dev \
+  --member="serviceAccount:aidream-backend@aidream-dev.iam.gserviceaccount.com" \
+  --role="roles/storage.admin"
+
+gcloud projects add-iam-policy-binding aidream-dev \
+  --member="serviceAccount:aidream-backend@aidream-dev.iam.gserviceaccount.com" \
+  --role="roles/datastore.user"
+
+gcloud projects add-iam-policy-binding aidream-dev \
+  --member="serviceAccount:aidream-backend@aidream-dev.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+# Скачать JSON-ключ
+gcloud iam service-accounts keys create ~/aidream-sa-key.json \
+  --iam-account=aidream-backend@aidream-dev.iam.gserviceaccount.com
+```
+
+**Проверка создания:**
+```bash
+# Убедиться, что service account создан
+gcloud iam service-accounts list --project=aidream-dev
+
+# Убедиться, что ключ создан
+ls -la ~/aidream-sa-key.json
+
+# Посмотреть роли service account
+gcloud projects get-iam-policy aidream-dev \
+  --format="table(bindings.role,bindings.members)" | grep aidream-backend
+```
+
+| Роль | Зачем нужна |
+|------|------------|
+| `roles/storage.admin` | Загрузка/скачивание файлов, генерация Signed URL |
+| `roles/datastore.user` | Чтение/запись в Firestore |
+| `roles/aiplatform.user` | Вызовы Vertex AI Veo |
+
+Затем скачайте `aidream-sa-key.json` из Cloud Shell на свой компьютер:
+- В Cloud Shell нажмите **⋮** (три точки) → **Download file** → укажите путь `aidream-sa-key.json`
+- Или выполните: `cloudshell download ~/aidream-sa-key.json`
+
+Положите файл на Mac (например в `/Users/YOUR_NAME/aidream-sa-key.json`) и укажите путь в `.env`:
+
+```env
+GOOGLE_APPLICATION_CREDENTIALS=/Users/YOUR_NAME/aidream-sa-key.json
+```
+
+> **Важно:** НЕ коммитьте JSON-ключ в git! Убедитесь, что `*.json` или `*-sa-key.json` есть в `.gitignore`.
+
+#### Способ B: Application Default Credentials (ADC)
+
+ADC — более простой способ, но **не поддерживает подпись Signed URL** (ошибка `SigningError`). Подходит только если вы не используете `getSignedUrl()`.
+
+```bash
+# Требуется gcloud CLI на вашем компьютере
 gcloud auth application-default login
 ```
 
 > **Отличие от `gcloud auth login`:** `gcloud auth login` авторизует CLI-команды (`gcloud`, `gsutil`). `gcloud auth application-default login` авторизует ваш **код** (NestJS-приложение, которое использует GCP SDK).
 
-**Проверка:**
+**Проверка ADC:**
 ```bash
 # Убедиться, что файл credentials создан
 ls -la ~/.config/gcloud/application_default_credentials.json
-# Файл должен существовать
 
-# Проверить, что токен рабочий (получить access token)
+# Проверить, что токен рабочий
 gcloud auth application-default print-access-token > /dev/null 2>&1 && echo "OK: ADC работает" || echo "FAIL: ADC не настроен"
 
 # Посмотреть текущий аккаунт gcloud
 gcloud auth list
-# Должен показать активный аккаунт с *
 ```
+
+> **Рекомендация:** используйте **Способ A** (Service Account Key) — он работает для всех GCP-сервисов включая Signed URL, и не требует установки gcloud CLI на Mac.
 
 ### Шаг 10: Настроить .env
 
@@ -514,6 +578,7 @@ NODE_ENV=development
 # GCP — ID вашего проекта и регион
 GCP_PROJECT_ID=aidream-dev
 GCP_REGION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=/Users/YOUR_NAME/aidream-sa-key.json  # путь к JSON-ключу из шага 9
 
 # Cloud Storage — имя bucket, который вы создали на шаге 5
 GCS_BUCKET=aidream-media-YOUR_PROJECT_ID
@@ -588,6 +653,7 @@ VITE_API_URL=http://localhost:8080
 | `PORT` | Порт сервера | `8080` |
 | `NODE_ENV` | Окружение (`development` / `production`) | `development` |
 | `GCP_PROJECT_ID` | ID Google Cloud проекта | `aidream-dev` |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Путь к JSON-ключу service account (шаг 9) | `/Users/me/aidream-sa-key.json` |
 | `GCP_REGION` | Регион GCP | `us-central1` |
 | `GCS_BUCKET` | Имя Cloud Storage bucket | `aidream-media-aidream-dev` |
 | `CLOUD_TASKS_QUEUE` | Имя Cloud Tasks очереди | `aidream-pipeline` |
