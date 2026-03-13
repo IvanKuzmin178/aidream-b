@@ -599,7 +599,7 @@ VERTEX_AI_MODEL=veo-2.0-generate-001
 # Лимиты приложения
 FREE_CREDITS=20                 # кредиты для новых пользователей
 MAX_PHOTOS_PER_PROJECT=20       # макс. фото в одном проекте
-MIN_PHOTOS_PER_PROJECT=5        # мин. фото для запуска генерации
+MIN_PHOTOS_PER_PROJECT=2        # мин. фото для запуска генерации
 MAX_CONCURRENT_PROJECTS=3       # макс. активных проектов на пользователя
 
 # CORS — URL фронтенда (React dev server)
@@ -663,7 +663,7 @@ VITE_API_URL=http://localhost:8080
 | `VERTEX_AI_MODEL` | Модель Vertex AI для генерации видео | `veo-2.0-generate-001` |
 | `FREE_CREDITS` | Кредиты для новых пользователей | `20` |
 | `MAX_PHOTOS_PER_PROJECT` | Макс. фото в проекте | `20` |
-| `MIN_PHOTOS_PER_PROJECT` | Мин. фото для генерации | `5` |
+| `MIN_PHOTOS_PER_PROJECT` | Мин. фото для генерации | `2` |
 | `MAX_CONCURRENT_PROJECTS` | Макс. активных проектов | `3` |
 | `CORS_ORIGIN` | Разрешённый origin для CORS | `http://localhost:3000` |
 

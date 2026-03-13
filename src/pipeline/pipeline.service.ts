@@ -33,6 +33,7 @@ export class PipelineService {
   }
 
   async startGeneration(projectId: string, userId: string): Promise<{ jobId: string }> {
+    this.logger.log(`[${projectId}] === GENERATION START === user=${userId}`);
     const project = await this.projectsService.get(projectId, userId);
 
     if (project.status !== 'uploaded') {
@@ -41,7 +42,7 @@ export class PipelineService {
       );
     }
 
-    const minPhotos = this.configService.get<number>('MIN_PHOTOS_PER_PROJECT', 5);
+    const minPhotos = this.configService.get<number>('MIN_PHOTOS_PER_PROJECT', 2);
     if (project.photoCount < minPhotos) {
       throw new BadRequestException(
         `At least ${minPhotos} photos required. Current: ${project.photoCount}`,
@@ -50,6 +51,7 @@ export class PipelineService {
 
     const cost = this.creditsService.calculateCost(project.style, project.photoCount);
     await this.creditsService.deductCredits(userId, cost, projectId);
+    this.logger.log(`[${projectId}] Credits deducted: ${cost} (style=${project.style}, photos=${project.photoCount})`);
 
     await this.projectsService.updateStatus(projectId, 'processing', {
       creditsCost: cost,
@@ -70,11 +72,12 @@ export class PipelineService {
       body: { projectId, jobId: jobRef.id },
     });
 
-    this.logger.log(`Generation started for project ${projectId}, cost=${cost}`);
+    this.logger.log(`[${projectId}] Pipeline queued, first job=${jobRef.id}`);
     return { jobId: jobRef.id };
   }
 
   async runPreprocess(projectId: string, jobId: string): Promise<void> {
+    this.logger.log(`[${projectId}] Step: PREPROCESS (job=${jobId})`);
     await this.updateJob(projectId, jobId, 'running');
     await this.projectsService.updateStatus(projectId, 'processing', {
       currentStep: 'preprocessing',
@@ -82,6 +85,7 @@ export class PipelineService {
 
     try {
       const photos = await this.preprocessService.preprocess(projectId);
+      this.logger.log(`[${projectId}] Preprocess complete: ${photos.length} valid photos`);
       await this.updateJob(projectId, jobId, 'completed');
 
       const storyJobRef = this.db.collection(`projects/${projectId}/jobs`).doc();
@@ -103,6 +107,7 @@ export class PipelineService {
   }
 
   async runStoryboard(projectId: string, jobId: string): Promise<void> {
+    this.logger.log(`[${projectId}] Step: STORYBOARD (job=${jobId})`);
     await this.updateJob(projectId, jobId, 'running');
     await this.projectsService.updateStatus(projectId, 'processing', {
       currentStep: 'building storyboard',
@@ -113,6 +118,13 @@ export class PipelineService {
       const photos = await this.projectsService.getPhotos(projectId);
       const scenes = this.storyboardService.buildStoryboard(project, photos);
 
+      this.logger.log(`[${projectId}] Storyboard: ${scenes.length} scenes planned`);
+      for (const scene of scenes) {
+        this.logger.log(
+          `[${projectId}]   Scene ${scene.index}: type=${scene.type}, mode=${scene.generationMode}, duration=${scene.duration}s, photos=${scene.inputPhotos.length}`,
+        );
+      }
+
       await this.updateJob(projectId, jobId, 'completed');
 
       for (const scene of scenes) {
@@ -122,6 +134,7 @@ export class PipelineService {
           status: 'queued',
           sceneIndex: scene.index,
           prompt: scene.prompt,
+          duration: scene.duration,
           inputPaths: scene.inputPhotos,
           retryCount: 0,
           createdAt: new Date(),
@@ -146,21 +159,28 @@ export class PipelineService {
     jobId: string,
     sceneIndex: number,
   ): Promise<void> {
+    this.logger.log(`[${projectId}] Step: GENERATE SCENE ${sceneIndex} (job=${jobId})`);
     await this.updateJob(projectId, jobId, 'running');
 
     try {
       const jobDoc = await this.db.doc(`projects/${projectId}/jobs/${jobId}`).get();
       const jobData = jobDoc.data() as JobEntity;
+      const mode = jobData.inputPaths.length > 1 ? 'first_last_frame' : 'image_to_video';
+      const duration = jobData.duration || 5;
+
+      this.logger.log(`[${projectId}]   mode=${mode}, duration=${duration}s, prompt="${(jobData.prompt || '').slice(0, 80)}..."`);
 
       const operationId = await this.vertexAiService.generateVideo({
         index: sceneIndex,
         type: jobData.inputPaths.length > 1 ? 'transition' : 'single',
         inputPhotos: jobData.inputPaths,
         prompt: jobData.prompt || '',
-        generationMode:
-          jobData.inputPaths.length > 1 ? 'first_last_frame' : 'image_to_video',
-        duration: 4,
+        generationMode: mode,
+        duration,
       });
+
+      this.logger.log(`[${projectId}]   Veo operation ID: ${operationId}`);
+      this.logger.log(`[${projectId}]   Check in GCP Console: https://console.cloud.google.com/vertex-ai/studio/media?project=${this.configService.get('GCP_PROJECT_ID')}`);
 
       await this.db.doc(`projects/${projectId}/jobs/${jobId}`).update({
         vertexOperationId: operationId,
@@ -182,6 +202,7 @@ export class PipelineService {
         body: { projectId, jobId: checkJobRef.id },
         delaySeconds: 30,
       });
+      this.logger.log(`[${projectId}]   Polling scheduled in 30s (checkJob=${checkJobRef.id})`);
     } catch (err) {
       await this.handleStepError(projectId, jobId, err);
     }
@@ -198,6 +219,8 @@ export class PipelineService {
         throw new Error('Missing vertexOperationId');
       }
 
+      this.logger.log(`[${projectId}] Step: CHECK GENERATION scene=${jobData.sceneIndex} (operation=${jobData.vertexOperationId})`);
+
       const result = await this.vertexAiService.checkOperation(
         jobData.vertexOperationId,
       );
@@ -207,6 +230,7 @@ export class PipelineService {
       }
 
       if (!result.done) {
+        this.logger.log(`[${projectId}]   Scene ${jobData.sceneIndex}: still generating, re-check in 30s`);
         await this.updateJob(projectId, jobId, 'queued');
         await this.queueService.enqueue({
           url: '/internal/pipeline/check-generation',
@@ -216,8 +240,11 @@ export class PipelineService {
         return;
       }
 
+      this.logger.log(`[${projectId}]   Scene ${jobData.sceneIndex}: DONE! videoUri=${result.videoGcsUri}`);
+
       const clipPath = `projects/${projectId}/clips/scene-${jobData.sceneIndex}.mp4`;
-      await this.vertexAiService.saveClipToGcs(result.videoUri!, clipPath);
+      await this.vertexAiService.saveClipToGcs(result.videoGcsUri!, clipPath);
+      this.logger.log(`[${projectId}]   Clip saved: ${clipPath}`);
 
       await this.db.doc(`projects/${projectId}/jobs/${jobId}`).update({
         status: 'completed',
@@ -229,6 +256,7 @@ export class PipelineService {
 
       const allDone = await this.areAllScenesComplete(projectId);
       if (allDone) {
+        this.logger.log(`[${projectId}]   All scenes complete! Starting assembly...`);
         await this.enqueueAssembly(projectId);
       }
     } catch (err) {
@@ -237,6 +265,7 @@ export class PipelineService {
   }
 
   async runAssemble(projectId: string, jobId: string): Promise<void> {
+    this.logger.log(`[${projectId}] Step: ASSEMBLE (job=${jobId})`);
     await this.updateJob(projectId, jobId, 'running');
     await this.projectsService.updateStatus(projectId, 'processing', {
       currentStep: 'assembling',
@@ -244,8 +273,10 @@ export class PipelineService {
 
     try {
       const clipPaths = await this.getCompletedClipPaths(projectId);
+      this.logger.log(`[${projectId}]   Assembling ${clipPaths.length} clips: ${clipPaths.join(', ')}`);
       await this.assemblyService.assemble(projectId, clipPaths);
       await this.updateJob(projectId, jobId, 'completed');
+      this.logger.log(`[${projectId}] === GENERATION COMPLETE ===`);
     } catch (err) {
       await this.handleStepError(projectId, jobId, err);
     }
@@ -284,7 +315,12 @@ export class PipelineService {
     err: unknown,
   ): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
-    this.logger.error(`Pipeline step failed for ${projectId}/${jobId}: ${message}`);
+    const stack = err instanceof Error ? err.stack : undefined;
+    this.logger.error(`[${projectId}] === PIPELINE FAILED === job=${jobId}`);
+    this.logger.error(`[${projectId}]   Error: ${message}`);
+    if (stack) {
+      this.logger.error(`[${projectId}]   Stack: ${stack.split('\n').slice(1, 4).join(' | ')}`);
+    }
 
     await this.db.doc(`projects/${projectId}/jobs/${jobId}`).update({
       status: 'failed',

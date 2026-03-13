@@ -12,19 +12,19 @@ interface StylePreset {
 
 const STYLE_PRESETS: Record<string, StylePreset> = {
   memory: {
-    sceneDuration: 4,
+    sceneDuration: 5,
     promptPrefix: 'A warm, nostalgic memory of',
     cameraMotion: 'slow gentle pan',
     colorGrade: 'warm vintage tones, soft golden light',
   },
   cinematic: {
-    sceneDuration: 5,
+    sceneDuration: 6,
     promptPrefix: 'A cinematic, dramatic shot of',
     cameraMotion: 'smooth dolly forward',
     colorGrade: 'high contrast, cool shadows, cinematic color grading',
   },
   dream: {
-    sceneDuration: 4,
+    sceneDuration: 5,
     promptPrefix: 'A dreamy, ethereal sequence of',
     cameraMotion: 'floating, slow orbit',
     colorGrade: 'soft focus, pastel tones, light bloom',

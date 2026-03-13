@@ -13,6 +13,7 @@ export interface JobEntity {
   status: JobStatus;
   sceneIndex?: number;
   prompt?: string;
+  duration?: number;
   inputPaths: string[];
   outputPath?: string;
   vertexOperationId?: string;

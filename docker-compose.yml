@@ -29,7 +29,7 @@ services:
       - VERTEX_AI_MODEL=veo-2.0-generate-001
       - FREE_CREDITS=20
       - MAX_PHOTOS_PER_PROJECT=20
-      - MIN_PHOTOS_PER_PROJECT=5
+      - MIN_PHOTOS_PER_PROJECT=2
       - MAX_CONCURRENT_PROJECTS=3
       - CORS_ORIGIN=http://localhost:3000
       - FIRESTORE_EMULATOR_HOST=firestore-emulator:8081

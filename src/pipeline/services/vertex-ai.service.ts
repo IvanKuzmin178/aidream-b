@@ -5,7 +5,7 @@ import { SceneEntity } from '../entities/scene.entity';
 
 export interface OperationResult {
   done: boolean;
-  videoUri?: string;
+  videoGcsUri?: string;
   error?: string;
 }
 
@@ -30,13 +30,19 @@ export class VertexAiService implements OnModuleInit {
   async generateVideo(scene: SceneEntity): Promise<string> {
     const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${this.model}:predictLongRunning`;
 
-    const body = this.buildRequestBody(scene);
-    this.logger.log(`Veo request body: ${JSON.stringify(body, null, 2)}`);
-
+    this.logger.log(`[Veo] Preparing scene ${scene.index}: mode=${scene.generationMode}, duration=${scene.duration}s`);
     for (const photo of scene.inputPhotos) {
       const exists = await this.storageService.fileExists(photo);
-      this.logger.log(`File check: ${photo} exists=${exists}`);
+      this.logger.log(`[Veo]   Photo: ${photo} (exists=${exists})`);
+      if (!exists) {
+        throw new Error(`Photo not found in GCS: ${photo}`);
+      }
     }
+
+    const body = await this.buildRequestBody(scene);
+    this.logger.log(`[Veo] Sending predictLongRunning request to ${this.model}...`);
+    this.logger.log(`[Veo]   prompt: "${scene.prompt.slice(0, 100)}..."`);
+    this.logger.log(`[Veo]   params: sampleCount=${body.parameters.sampleCount}, duration=${body.parameters.durationSeconds}s, storageUri=${body.parameters.storageUri}`);
 
     const token = await this.getAccessToken();
 
@@ -51,83 +57,120 @@ export class VertexAiService implements OnModuleInit {
 
     if (!response.ok) {
       const text = await response.text();
+      this.logger.error(`[Veo] Request FAILED: ${response.status}`);
+      this.logger.error(`[Veo]   Response: ${text.slice(0, 500)}`);
       throw new Error(`Vertex AI request failed: ${response.status} ${text}`);
     }
 
     const data = await response.json();
-    this.logger.log(`Vertex AI operation started: ${data.name}`);
+    this.logger.log(`[Veo] Operation CREATED: ${data.name}`);
+    this.logger.log(`[Veo]   Manual check: curl -X POST -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "Content-Type: application/json" -d '{"operationName":"${data.name}"}' "https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${this.model}:fetchPredictOperation"`);
     return data.name;
   }
 
   async checkOperation(operationId: string): Promise<OperationResult> {
-    const url = `https://${this.region}-aiplatform.googleapis.com/v1/${operationId}`;
+    const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${this.model}:fetchPredictOperation`;
     const token = await this.getAccessToken();
 
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ operationName: operationId }),
     });
 
     if (!response.ok) {
-      throw new Error(`Operation check failed: ${response.status}`);
+      const text = await response.text();
+      throw new Error(`Operation check failed: ${response.status} ${text}`);
     }
 
     const data = await response.json();
+
+    if (data.error) {
+      this.logger.error(`[Veo] Operation error: ${JSON.stringify(data.error)}`);
+    } else if (data.done) {
+      const videos = data.response?.videos || [];
+      this.logger.log(`[Veo] Operation COMPLETE: ${videos.length} video(s) generated`);
+      for (const v of videos) {
+        this.logger.log(`[Veo]   Video: ${v.gcsUri} (${v.mimeType})`);
+      }
+      if (data.response?.raiMediaFilteredCount > 0) {
+        this.logger.warn(`[Veo]   RAI filtered: ${data.response.raiMediaFilteredCount} video(s) blocked by content policy`);
+      }
+    } else {
+      this.logger.log(`[Veo] Operation in progress...`);
+    }
+
     return {
       done: !!data.done,
-      videoUri: data.response?.videoUri,
+      videoGcsUri: data.response?.videos?.[0]?.gcsUri,
       error: data.error?.message,
     };
   }
 
-  async saveClipToGcs(videoUri: string, destPath: string): Promise<void> {
-    const token = await this.getAccessToken();
-    const response = await fetch(videoUri, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+  async saveClipToGcs(videoGcsUri: string, destPath: string): Promise<void> {
+    const bucket = this.storageService.getBucket();
+    const bucketName = this.configService.get('GCS_BUCKET');
 
-    if (!response.ok) {
-      throw new Error(`Failed to download video: ${response.status}`);
+    if (videoGcsUri.startsWith(`gs://${bucketName}/`)) {
+      const srcPath = videoGcsUri.replace(`gs://${bucketName}/`, '');
+      await this.storageService.copyFile(srcPath, destPath);
+      this.logger.log(`Clip copied within bucket: ${srcPath} -> ${destPath}`);
+      return;
     }
 
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const bucket = this.storageService.getBucket();
-    const file = bucket.file(destPath);
-    await file.save(buffer, { contentType: 'video/mp4' });
+    const match = videoGcsUri.match(/^gs:\/\/([^/]+)\/(.+)$/);
+    if (match) {
+      const [, srcBucket, srcPath] = match;
+      const storage = bucket.storage;
+      const srcFile = storage.bucket(srcBucket).file(srcPath);
+      await srcFile.copy(bucket.file(destPath));
+      this.logger.log(`Clip copied cross-bucket: ${videoGcsUri} -> ${destPath}`);
+      return;
+    }
 
-    this.logger.log(`Clip saved to GCS: ${destPath}`);
+    throw new Error(`Unexpected video URI format: ${videoGcsUri}`);
   }
 
-  private buildRequestBody(scene: SceneEntity) {
-    const inputImage = scene.inputPhotos[0];
-    const lastImage = scene.inputPhotos.length > 1 ? scene.inputPhotos[1] : undefined;
+  private async buildRequestBody(scene: SceneEntity) {
+    const firstImageBase64 = await this.downloadAsBase64(scene.inputPhotos[0]);
     const bucket = this.configService.get('GCS_BUCKET');
+    const storageUri = `gs://${bucket}/veo-output`;
 
     const request: Record<string, any> = {
       instances: [
         {
           prompt: scene.prompt,
           image: {
-            gcsUri: `gs://${bucket}/${inputImage}`,
-            mimeType: this.guessMimeType(inputImage),
+            bytesBase64Encoded: firstImageBase64,
+            mimeType: this.guessMimeType(scene.inputPhotos[0]),
           },
         },
       ],
       parameters: {
         sampleCount: 1,
         durationSeconds: scene.duration,
+        storageUri,
       },
     };
 
-    if (lastImage && scene.generationMode === 'first_last_frame') {
+    if (scene.inputPhotos.length > 1 && scene.generationMode === 'first_last_frame') {
+      const lastImageBase64 = await this.downloadAsBase64(scene.inputPhotos[1]);
       request.instances[0].lastFrame = {
-        image: {
-          gcsUri: `gs://${bucket}/${lastImage}`,
-          mimeType: this.guessMimeType(lastImage),
-        },
+        bytesBase64Encoded: lastImageBase64,
+        mimeType: this.guessMimeType(scene.inputPhotos[1]),
       };
     }
 
     return request;
+  }
+
+  private async downloadAsBase64(objectPath: string): Promise<string> {
+    const bucket = this.storageService.getBucket();
+    const [buffer] = await bucket.file(objectPath).download();
+    return buffer.toString('base64');
   }
 
   private guessMimeType(path: string): string {
