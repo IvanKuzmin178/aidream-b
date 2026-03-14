@@ -26,7 +26,6 @@ services:
       - CLOUD_TASKS_LOCATION=us-central1
       - BACKEND_URL=http://localhost:8080
       - FIREBASE_PROJECT_ID=aidream-dev
-      - VERTEX_AI_MODEL=veo-2.0-generate-001
       - FREE_CREDITS=20
       - MAX_PHOTOS_PER_PROJECT=20
       - MIN_PHOTOS_PER_PROJECT=2

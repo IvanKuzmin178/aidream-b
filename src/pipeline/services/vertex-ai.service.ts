@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StorageService } from '../../storage/storage.service';
 import { SceneEntity } from '../entities/scene.entity';
+import { DEFAULT_VIDEO_MODEL } from '../../models/vertex-ai-models.constants';
 
 export interface OperationResult {
   done: boolean;
@@ -9,12 +10,22 @@ export interface OperationResult {
   error?: string;
 }
 
+export interface ImageGenerationResult {
+  bytesBase64: string;
+  mimeType: string;
+}
+
+export interface AudioGenerationResult {
+  bytesBase64: string;
+  mimeType: string;
+}
+
 @Injectable()
 export class VertexAiService implements OnModuleInit {
   private readonly logger = new Logger(VertexAiService.name);
   private projectId!: string;
   private region!: string;
-  private model!: string;
+  private defaultModel!: string;
 
   constructor(
     private readonly configService: ConfigService,
@@ -24,23 +35,30 @@ export class VertexAiService implements OnModuleInit {
   onModuleInit() {
     this.projectId = this.configService.get<string>('GCP_PROJECT_ID')!;
     this.region = this.configService.get<string>('GCP_REGION', 'us-central1');
-    this.model = this.configService.get<string>('VERTEX_AI_MODEL', 'veo-2.0-generate-001');
+    this.defaultModel = DEFAULT_VIDEO_MODEL;
   }
 
-  async generateVideo(scene: SceneEntity): Promise<string> {
-    const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${this.model}:predictLongRunning`;
+  private modelOrDefault(modelId?: string): string {
+    return modelId || this.defaultModel;
+  }
 
-    this.logger.log(`[Veo] Preparing scene ${scene.index}: mode=${scene.generationMode}, duration=${scene.duration}s`);
-    for (const photo of scene.inputPhotos) {
-      const exists = await this.storageService.fileExists(photo);
-      this.logger.log(`[Veo]   Photo: ${photo} (exists=${exists})`);
-      if (!exists) {
-        throw new Error(`Photo not found in GCS: ${photo}`);
+  async generateVideo(scene: SceneEntity, modelId?: string): Promise<string> {
+    const model = this.modelOrDefault(modelId);
+    const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${model}:predictLongRunning`;
+
+    this.logger.log(`[Veo] Preparing scene ${scene.index}: mode=${scene.generationMode}, duration=${scene.duration}s, model=${model}`);
+    if (scene.generationMode !== 'text_to_video') {
+      for (const photo of scene.inputPhotos) {
+        const exists = await this.storageService.fileExists(photo);
+        this.logger.log(`[Veo]   Photo: ${photo} (exists=${exists})`);
+        if (!exists) {
+          throw new Error(`Photo not found in GCS: ${photo}`);
+        }
       }
     }
 
     const body = await this.buildRequestBody(scene);
-    this.logger.log(`[Veo] Sending predictLongRunning request to ${this.model}...`);
+    this.logger.log(`[Veo] Sending predictLongRunning request to ${model}...`);
     this.logger.log(`[Veo]   prompt: "${scene.prompt.slice(0, 100)}..."`);
     this.logger.log(`[Veo]   params: sampleCount=${body.parameters.sampleCount}, duration=${body.parameters.durationSeconds}s, storageUri=${body.parameters.storageUri}`);
 
@@ -64,12 +82,13 @@ export class VertexAiService implements OnModuleInit {
 
     const data = await response.json();
     this.logger.log(`[Veo] Operation CREATED: ${data.name}`);
-    this.logger.log(`[Veo]   Manual check: curl -X POST -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "Content-Type: application/json" -d '{"operationName":"${data.name}"}' "https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${this.model}:fetchPredictOperation"`);
+    this.logger.log(`[Veo]   Manual check: curl -X POST ... models/${model}:fetchPredictOperation"`);
     return data.name;
   }
 
-  async checkOperation(operationId: string): Promise<OperationResult> {
-    const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${this.model}:fetchPredictOperation`;
+  async checkOperation(operationId: string, modelId?: string): Promise<OperationResult> {
+    const model = this.modelOrDefault(modelId);
+    const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${model}:fetchPredictOperation`;
     const token = await this.getAccessToken();
 
     const response = await fetch(endpoint, {
@@ -134,37 +153,121 @@ export class VertexAiService implements OnModuleInit {
     throw new Error(`Unexpected video URI format: ${videoGcsUri}`);
   }
 
+  async generateImage(prompt: string, modelId: string): Promise<ImageGenerationResult> {
+    const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${modelId}:predict`;
+    this.logger.log(`[Imagen] Generating image with model ${modelId}`);
+
+    const token = await this.getAccessToken();
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        instances: [{ prompt }],
+        parameters: { sampleCount: 1 },
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      this.logger.error(`[Imagen] Request FAILED: ${response.status} ${text.slice(0, 500)}`);
+      throw new Error(`Imagen request failed: ${response.status} ${text}`);
+    }
+
+    const data = await response.json();
+    const pred = data.predictions?.[0];
+    if (!pred?.bytesBase64Encoded) {
+      throw new Error('No image in Imagen response');
+    }
+    this.logger.log(`[Imagen] Image generated (${pred.mimeType || 'image/png'})`);
+    return {
+      bytesBase64: pred.bytesBase64Encoded,
+      mimeType: pred.mimeType || 'image/png',
+    };
+  }
+
+  async generateAudio(prompt: string, modelId: string): Promise<AudioGenerationResult> {
+    const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${modelId}:predict`;
+    this.logger.log(`[Lyria] Generating audio with model ${modelId}`);
+
+    const token = await this.getAccessToken();
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        instances: [{ prompt }],
+        parameters: {},
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      this.logger.error(`[Lyria] Request FAILED: ${response.status} ${text.slice(0, 500)}`);
+      throw new Error(`Lyria request failed: ${response.status} ${text}`);
+    }
+
+    const data = await response.json();
+    const pred = data.predictions?.[0];
+    if (!pred?.audioContent) {
+      throw new Error('No audio in Lyria response');
+    }
+    this.logger.log(`[Lyria] Audio generated (${pred.mimeType || 'audio/wav'})`);
+    return {
+      bytesBase64: pred.audioContent,
+      mimeType: pred.mimeType || 'audio/wav',
+    };
+  }
+
+  async saveMediaToGcs(
+    bytesBase64: string,
+    destPath: string,
+    mimeType: string,
+  ): Promise<void> {
+    const ext = mimeType.includes('png') ? 'png' : mimeType.includes('wav') ? 'wav' : 'jpg';
+    const bucket = this.storageService.getBucket();
+    const file = bucket.file(destPath.endsWith(`.${ext}`) ? destPath : `${destPath}.${ext}`);
+    const buf = Buffer.from(bytesBase64, 'base64');
+    await file.save(buf, { contentType: mimeType });
+    this.logger.log(`Media saved: ${file.name}`);
+  }
+
   private async buildRequestBody(scene: SceneEntity) {
-    const firstImageBase64 = await this.downloadAsBase64(scene.inputPhotos[0]);
     const bucket = this.configService.get('GCS_BUCKET');
     const storageUri = `gs://${bucket}/veo-output`;
 
-    const request: Record<string, any> = {
-      instances: [
-        {
-          prompt: scene.prompt,
-          image: {
-            bytesBase64Encoded: firstImageBase64,
-            mimeType: this.guessMimeType(scene.inputPhotos[0]),
-          },
-        },
-      ],
+    const instance: Record<string, any> = {
+      prompt: scene.prompt,
+    };
+
+    if (scene.generationMode !== 'text_to_video' && scene.inputPhotos.length > 0) {
+      const firstImageBase64 = await this.downloadAsBase64(scene.inputPhotos[0]);
+      instance.image = {
+        bytesBase64Encoded: firstImageBase64,
+        mimeType: this.guessMimeType(scene.inputPhotos[0]),
+      };
+
+      if (scene.inputPhotos.length > 1 && scene.generationMode === 'first_last_frame') {
+        const lastImageBase64 = await this.downloadAsBase64(scene.inputPhotos[1]);
+        instance.lastFrame = {
+          bytesBase64Encoded: lastImageBase64,
+          mimeType: this.guessMimeType(scene.inputPhotos[1]),
+        };
+      }
+    }
+
+    return {
+      instances: [instance],
       parameters: {
         sampleCount: 1,
         durationSeconds: scene.duration,
         storageUri,
       },
     };
-
-    if (scene.inputPhotos.length > 1 && scene.generationMode === 'first_last_frame') {
-      const lastImageBase64 = await this.downloadAsBase64(scene.inputPhotos[1]);
-      request.instances[0].lastFrame = {
-        bytesBase64Encoded: lastImageBase64,
-        mimeType: this.guessMimeType(scene.inputPhotos[1]),
-      };
-    }
-
-    return request;
   }
 
   private async downloadAsBase64(objectPath: string): Promise<string> {

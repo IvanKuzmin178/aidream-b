@@ -20,7 +20,10 @@ export class FirebaseService implements OnModuleInit {
       this.app = admin.apps[0]!;
     }
 
-    this.firestoreInstance = new Firestore({ projectId });
+    this.firestoreInstance = new Firestore({
+      projectId,
+      ignoreUndefinedProperties: true,
+    });
     this.logger.log(`Firebase Admin SDK initialized for project: ${projectId}`);
   }
 

@@ -9,6 +9,7 @@ import { StorageModule } from './storage/storage.module';
 import { CreditsModule } from './credits/credits.module';
 import { QueueModule } from './queue/queue.module';
 import { PipelineModule } from './pipeline/pipeline.module';
+import { ModelsModule } from './models/models.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { PipelineModule } from './pipeline/pipeline.module';
     CreditsModule,
     QueueModule,
     PipelineModule,
+    ModelsModule,
   ],
   controllers: [AppController],
 })

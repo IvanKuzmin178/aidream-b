@@ -7,9 +7,10 @@ import { VertexAiService } from './services/vertex-ai.service';
 import { AssemblyService } from './services/assembly.service';
 import { ProjectsModule } from '../projects/projects.module';
 import { CreditsModule } from '../credits/credits.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
-  imports: [ProjectsModule, CreditsModule],
+  imports: [ProjectsModule, CreditsModule, UsersModule],
   controllers: [PipelineController],
   providers: [
     PipelineService,

@@ -62,4 +62,16 @@ export class PipelineController {
   assemble(@Body() dto: PipelineTaskDto) {
     return this.pipelineService.runAssemble(dto.projectId, dto.jobId!);
   }
+
+  @Post('internal/pipeline/generate-image')
+  @UseGuards(OidcAuthGuard)
+  generateImage(@Body() dto: PipelineTaskDto) {
+    return this.pipelineService.runGenerateImage(dto.projectId, dto.jobId!);
+  }
+
+  @Post('internal/pipeline/generate-audio')
+  @UseGuards(OidcAuthGuard)
+  generateAudio(@Body() dto: PipelineTaskDto) {
+    return this.pipelineService.runGenerateAudio(dto.projectId, dto.jobId!);
+  }
 }

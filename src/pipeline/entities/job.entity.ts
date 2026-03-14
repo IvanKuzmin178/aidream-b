@@ -3,7 +3,9 @@ export type JobType =
   | 'storyboard'
   | 'generate_scene'
   | 'check_generation'
-  | 'assemble';
+  | 'assemble'
+  | 'generate_image'
+  | 'generate_audio';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -17,6 +19,7 @@ export interface JobEntity {
   inputPaths: string[];
   outputPath?: string;
   vertexOperationId?: string;
+  modelId?: string;
   retryCount: number;
   createdAt: Date;
   completedAt?: Date;

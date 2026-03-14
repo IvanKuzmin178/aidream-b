@@ -1,4 +1,6 @@
 export type ProjectStyle = 'memory' | 'cinematic' | 'dream';
+export type GenerationType = 'image_to_video' | 'text_to_video';
+export type OutputType = 'video' | 'image' | 'audio';
 export type ProjectStatus =
   | 'draft'
   | 'uploaded'
@@ -11,13 +13,19 @@ export interface ProjectEntity {
   userId: string;
   title: string;
   style: ProjectStyle;
+  outputType: OutputType;
+  generationType?: GenerationType;
+  modelId: string;
   status: ProjectStatus;
   photoCount: number;
   creditsCost: number;
   currentStep: string;
+  prompt?: string;
   createdAt: Date;
   updatedAt: Date;
   resultVideoPath?: string;
+  resultImagePath?: string;
+  resultAudioPath?: string;
   resultDuration?: number;
   error?: string;
 }

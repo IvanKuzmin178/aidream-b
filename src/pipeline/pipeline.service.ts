@@ -4,6 +4,7 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { StorageService } from '../storage/storage.service';
 import { ProjectsService } from '../projects/projects.service';
 import { CreditsService } from '../credits/credits.service';
+import { UsersService } from '../users/users.service';
 import { QueueService } from '../queue/queue.service';
 import { PreprocessService } from './services/preprocess.service';
 import { StoryboardService } from './services/storyboard.service';
@@ -20,6 +21,7 @@ export class PipelineService {
     private readonly storageService: StorageService,
     private readonly projectsService: ProjectsService,
     private readonly creditsService: CreditsService,
+    private readonly usersService: UsersService,
     private readonly queueService: QueueService,
     private readonly preprocessService: PreprocessService,
     private readonly storyboardService: StoryboardService,
@@ -36,6 +38,27 @@ export class PipelineService {
     this.logger.log(`[${projectId}] === GENERATION START === user=${userId}`);
     const project = await this.projectsService.get(projectId, userId);
 
+    const outputType = project.outputType || 'video';
+    const genType = project.generationType || 'image_to_video';
+
+    if (outputType === 'image') {
+      return this.startImageGeneration(projectId, userId, project);
+    }
+    if (outputType === 'audio') {
+      return this.startAudioGeneration(projectId, userId, project);
+    }
+    if (genType === 'text_to_video') {
+      return this.startTextToVideo(projectId, userId, project);
+    }
+    return this.startImageToVideo(projectId, userId, project);
+  }
+
+  private async startImageToVideo(
+    projectId: string,
+    userId: string,
+    project: Awaited<ReturnType<ProjectsService['get']>>,
+  ): Promise<{ jobId: string }> {
+    await this.usersService.getOrCreateUser(userId);
     if (project.status !== 'uploaded') {
       throw new BadRequestException(
         'Project must have uploaded photos before generating',
@@ -49,7 +72,7 @@ export class PipelineService {
       );
     }
 
-    const cost = this.creditsService.calculateCost(project.style, project.photoCount);
+    const cost = this.creditsService.calculateCost(project.style, project.photoCount, 'image_to_video');
     await this.creditsService.deductCredits(userId, cost, projectId);
     this.logger.log(`[${projectId}] Credits deducted: ${cost} (style=${project.style}, photos=${project.photoCount})`);
 
@@ -72,7 +95,124 @@ export class PipelineService {
       body: { projectId, jobId: jobRef.id },
     });
 
-    this.logger.log(`[${projectId}] Pipeline queued, first job=${jobRef.id}`);
+    this.logger.log(`[${projectId}] Pipeline queued (image_to_video), first job=${jobRef.id}`);
+    return { jobId: jobRef.id };
+  }
+
+  private async startTextToVideo(
+    projectId: string,
+    userId: string,
+    project: Awaited<ReturnType<ProjectsService['get']>>,
+  ): Promise<{ jobId: string }> {
+    await this.usersService.getOrCreateUser(userId);
+    if (!project.prompt?.trim()) {
+      throw new BadRequestException('A text prompt is required for text-to-video generation');
+    }
+
+    if (project.status !== 'draft') {
+      throw new BadRequestException('Project must be in draft status to generate');
+    }
+
+    const cost = this.creditsService.calculateCost(project.style, 0, 'text_to_video');
+    await this.creditsService.deductCredits(userId, cost, projectId);
+    this.logger.log(`[${projectId}] Credits deducted: ${cost} (text_to_video, style=${project.style})`);
+
+    await this.projectsService.updateStatus(projectId, 'processing', {
+      creditsCost: cost,
+      currentStep: 'generating 0/1',
+    });
+
+    const style = { memory: 5, cinematic: 6, dream: 5 }[project.style] || 5;
+
+    const jobRef = this.db.collection(`projects/${projectId}/jobs`).doc();
+    await jobRef.set({
+      type: 'generate_scene',
+      status: 'queued',
+      sceneIndex: 0,
+      prompt: project.prompt,
+      duration: style,
+      inputPaths: [],
+      modelId: project.modelId,
+      retryCount: 0,
+      createdAt: new Date(),
+    });
+
+    await this.queueService.enqueue({
+      url: '/internal/pipeline/generate-scene',
+      body: { projectId, jobId: jobRef.id, sceneIndex: 0 },
+    });
+
+    this.logger.log(`[${projectId}] Pipeline queued (text_to_video), job=${jobRef.id}`);
+    return { jobId: jobRef.id };
+  }
+
+  private async startImageGeneration(
+    projectId: string,
+    userId: string,
+    project: Awaited<ReturnType<ProjectsService['get']>>,
+  ): Promise<{ jobId: string }> {
+    await this.usersService.getOrCreateUser(userId);
+    if (!project.prompt?.trim()) {
+      throw new BadRequestException('A text prompt is required for image generation');
+    }
+    if (project.status !== 'draft') {
+      throw new BadRequestException('Project must be in draft status');
+    }
+    const cost = this.creditsService.calculateCost(project.style, 0, 'image');
+    await this.creditsService.deductCredits(userId, cost, projectId);
+    await this.projectsService.updateStatus(projectId, 'processing', {
+      creditsCost: cost,
+      currentStep: 'generating image',
+    });
+    const jobRef = this.db.collection(`projects/${projectId}/jobs`).doc();
+    await jobRef.set({
+      type: 'generate_image',
+      status: 'queued',
+      prompt: project.prompt,
+      modelId: project.modelId,
+      retryCount: 0,
+      createdAt: new Date(),
+    });
+    await this.queueService.enqueue({
+      url: '/internal/pipeline/generate-image',
+      body: { projectId, jobId: jobRef.id },
+    });
+    this.logger.log(`[${projectId}] Pipeline queued (image), job=${jobRef.id}`);
+    return { jobId: jobRef.id };
+  }
+
+  private async startAudioGeneration(
+    projectId: string,
+    userId: string,
+    project: Awaited<ReturnType<ProjectsService['get']>>,
+  ): Promise<{ jobId: string }> {
+    await this.usersService.getOrCreateUser(userId);
+    if (!project.prompt?.trim()) {
+      throw new BadRequestException('A text prompt is required for audio generation');
+    }
+    if (project.status !== 'draft') {
+      throw new BadRequestException('Project must be in draft status');
+    }
+    const cost = this.creditsService.calculateCost(project.style, 0, 'audio');
+    await this.creditsService.deductCredits(userId, cost, projectId);
+    await this.projectsService.updateStatus(projectId, 'processing', {
+      creditsCost: cost,
+      currentStep: 'generating audio',
+    });
+    const jobRef = this.db.collection(`projects/${projectId}/jobs`).doc();
+    await jobRef.set({
+      type: 'generate_audio',
+      status: 'queued',
+      prompt: project.prompt,
+      modelId: project.modelId,
+      retryCount: 0,
+      createdAt: new Date(),
+    });
+    await this.queueService.enqueue({
+      url: '/internal/pipeline/generate-audio',
+      body: { projectId, jobId: jobRef.id },
+    });
+    this.logger.log(`[${projectId}] Pipeline queued (audio), job=${jobRef.id}`);
     return { jobId: jobRef.id };
   }
 
@@ -136,6 +276,7 @@ export class PipelineService {
           prompt: scene.prompt,
           duration: scene.duration,
           inputPaths: scene.inputPhotos,
+          modelId: project.modelId,
           retryCount: 0,
           createdAt: new Date(),
         });
@@ -165,19 +306,27 @@ export class PipelineService {
     try {
       const jobDoc = await this.db.doc(`projects/${projectId}/jobs/${jobId}`).get();
       const jobData = jobDoc.data() as JobEntity;
-      const mode = jobData.inputPaths.length > 1 ? 'first_last_frame' : 'image_to_video';
+      const hasPhotos = jobData.inputPaths && jobData.inputPaths.length > 0;
+      const mode = !hasPhotos
+        ? 'text_to_video' as const
+        : jobData.inputPaths.length > 1
+          ? 'first_last_frame' as const
+          : 'image_to_video' as const;
       const duration = jobData.duration || 5;
 
       this.logger.log(`[${projectId}]   mode=${mode}, duration=${duration}s, prompt="${(jobData.prompt || '').slice(0, 80)}..."`);
 
+      const project = await this.projectsService.getById(projectId);
+      const modelId = jobData.modelId || project.modelId;
+
       const operationId = await this.vertexAiService.generateVideo({
         index: sceneIndex,
-        type: jobData.inputPaths.length > 1 ? 'transition' : 'single',
-        inputPhotos: jobData.inputPaths,
+        type: hasPhotos && jobData.inputPaths.length > 1 ? 'transition' : 'single',
+        inputPhotos: jobData.inputPaths || [],
         prompt: jobData.prompt || '',
         generationMode: mode,
         duration,
-      });
+      }, modelId);
 
       this.logger.log(`[${projectId}]   Veo operation ID: ${operationId}`);
       this.logger.log(`[${projectId}]   Check in GCP Console: https://console.cloud.google.com/vertex-ai/studio/media?project=${this.configService.get('GCP_PROJECT_ID')}`);
@@ -192,6 +341,7 @@ export class PipelineService {
         status: 'queued',
         sceneIndex,
         vertexOperationId: operationId,
+        modelId,
         inputPaths: jobData.inputPaths,
         retryCount: 0,
         createdAt: new Date(),
@@ -221,8 +371,12 @@ export class PipelineService {
 
       this.logger.log(`[${projectId}] Step: CHECK GENERATION scene=${jobData.sceneIndex} (operation=${jobData.vertexOperationId})`);
 
+      const project = await this.projectsService.getById(projectId);
+      const modelId = jobData.modelId || project.modelId;
+
       const result = await this.vertexAiService.checkOperation(
         jobData.vertexOperationId,
+        modelId,
       );
 
       if (result.error) {
@@ -254,11 +408,96 @@ export class PipelineService {
 
       await this.updateGenerationProgress(projectId);
 
-      const allDone = await this.areAllScenesComplete(projectId);
-      if (allDone) {
-        this.logger.log(`[${projectId}]   All scenes complete! Starting assembly...`);
-        await this.enqueueAssembly(projectId);
+      const proj = await this.projectsService.getById(projectId);
+      if (proj.generationType === 'text_to_video') {
+        const finalPath = `projects/${projectId}/output/final.mp4`;
+        await this.storageService.copyFile(clipPath, finalPath);
+        await this.projectsService.updateStatus(projectId, 'completed', {
+          resultVideoPath: finalPath,
+          currentStep: 'completed',
+        });
+        this.logger.log(`[${projectId}] === TEXT-TO-VIDEO COMPLETE === ${finalPath}`);
+      } else {
+        const allDone = await this.areAllScenesComplete(projectId);
+        if (allDone) {
+          this.logger.log(`[${projectId}]   All scenes complete! Starting assembly...`);
+          await this.enqueueAssembly(projectId);
+        }
       }
+    } catch (err) {
+      await this.handleStepError(projectId, jobId, err);
+    }
+  }
+
+  async runGenerateImage(projectId: string, jobId: string): Promise<void> {
+    this.logger.log(`[${projectId}] Step: GENERATE IMAGE (job=${jobId})`);
+    await this.updateJob(projectId, jobId, 'running');
+
+    try {
+      const jobDoc = await this.db.doc(`projects/${projectId}/jobs/${jobId}`).get();
+      const jobData = jobDoc.data() as JobEntity;
+      const { prompt, modelId } = jobData;
+
+      if (!prompt?.trim() || !modelId) {
+        throw new Error('Missing prompt or modelId for image generation');
+      }
+
+      const result = await this.vertexAiService.generateImage(prompt, modelId);
+      const destPath = `projects/${projectId}/output/image.png`;
+      await this.vertexAiService.saveMediaToGcs(
+        result.bytesBase64,
+        destPath,
+        result.mimeType,
+      );
+
+      await this.db.doc(`projects/${projectId}/jobs/${jobId}`).update({
+        status: 'completed',
+        outputPath: destPath,
+        completedAt: new Date(),
+      });
+
+      await this.projectsService.updateStatus(projectId, 'completed', {
+        resultImagePath: destPath,
+        currentStep: 'completed',
+      });
+      this.logger.log(`[${projectId}] === IMAGE GENERATION COMPLETE === ${destPath}`);
+    } catch (err) {
+      await this.handleStepError(projectId, jobId, err);
+    }
+  }
+
+  async runGenerateAudio(projectId: string, jobId: string): Promise<void> {
+    this.logger.log(`[${projectId}] Step: GENERATE AUDIO (job=${jobId})`);
+    await this.updateJob(projectId, jobId, 'running');
+
+    try {
+      const jobDoc = await this.db.doc(`projects/${projectId}/jobs/${jobId}`).get();
+      const jobData = jobDoc.data() as JobEntity;
+      const { prompt, modelId } = jobData;
+
+      if (!prompt?.trim() || !modelId) {
+        throw new Error('Missing prompt or modelId for audio generation');
+      }
+
+      const result = await this.vertexAiService.generateAudio(prompt, modelId);
+      const destPath = `projects/${projectId}/output/audio.wav`;
+      await this.vertexAiService.saveMediaToGcs(
+        result.bytesBase64,
+        destPath,
+        result.mimeType,
+      );
+
+      await this.db.doc(`projects/${projectId}/jobs/${jobId}`).update({
+        status: 'completed',
+        outputPath: destPath,
+        completedAt: new Date(),
+      });
+
+      await this.projectsService.updateStatus(projectId, 'completed', {
+        resultAudioPath: destPath,
+        currentStep: 'completed',
+      });
+      this.logger.log(`[${projectId}] === AUDIO GENERATION COMPLETE === ${destPath}`);
     } catch (err) {
       await this.handleStepError(projectId, jobId, err);
     }
@@ -284,19 +523,32 @@ export class PipelineService {
 
   async getResult(projectId: string, userId: string) {
     const project = await this.projectsService.get(projectId, userId);
-    if (project.status !== 'completed' || !project.resultVideoPath) {
+    if (project.status !== 'completed') {
       return { status: project.status, currentStep: project.currentStep };
     }
-
-    const downloadUrl = await this.storageService.generateSignedDownloadUrl(
-      project.resultVideoPath,
-    );
-
-    return {
-      status: project.status,
-      videoUrl: downloadUrl,
-      duration: project.resultDuration,
-    };
+    if (project.resultVideoPath) {
+      const downloadUrl = await this.storageService.generateSignedDownloadUrl(
+        project.resultVideoPath,
+      );
+      return {
+        status: project.status,
+        videoUrl: downloadUrl,
+        duration: project.resultDuration,
+      };
+    }
+    if (project.resultImagePath) {
+      const imageUrl = await this.storageService.generateSignedDownloadUrl(
+        project.resultImagePath,
+      );
+      return { status: project.status, imageUrl };
+    }
+    if (project.resultAudioPath) {
+      const audioUrl = await this.storageService.generateSignedDownloadUrl(
+        project.resultAudioPath,
+      );
+      return { status: project.status, audioUrl };
+    }
+    return { status: project.status, currentStep: project.currentStep };
   }
 
   private async updateJob(

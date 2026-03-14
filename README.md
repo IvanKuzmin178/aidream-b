@@ -593,9 +593,6 @@ BACKEND_URL=http://localhost:8080
 # Firebase — обычно совпадает с GCP_PROJECT_ID
 FIREBASE_PROJECT_ID=aidream-dev
 
-# Vertex AI — модель для генерации видео
-VERTEX_AI_MODEL=veo-2.0-generate-001
-
 # Лимиты приложения
 FREE_CREDITS=20                 # кредиты для новых пользователей
 MAX_PHOTOS_PER_PROJECT=20       # макс. фото в одном проекте
@@ -660,7 +657,6 @@ VITE_API_URL=http://localhost:8080
 | `CLOUD_TASKS_LOCATION` | Регион Cloud Tasks | `us-central1` |
 | `BACKEND_URL` | Публичный URL бэкенда (для Cloud Tasks callbacks) | `http://localhost:8080` |
 | `FIREBASE_PROJECT_ID` | ID Firebase проекта | `aidream-dev` |
-| `VERTEX_AI_MODEL` | Модель Vertex AI для генерации видео | `veo-2.0-generate-001` |
 | `FREE_CREDITS` | Кредиты для новых пользователей | `20` |
 | `MAX_PHOTOS_PER_PROJECT` | Макс. фото в проекте | `20` |
 | `MIN_PHOTOS_PER_PROJECT` | Мин. фото для генерации | `2` |

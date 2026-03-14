@@ -40,16 +40,26 @@ export class ProjectsService {
       );
     }
 
+    if (dto.outputType === 'video' && !dto.generationType) {
+      throw new BadRequestException('generationType is required when outputType is video');
+    }
+
     const ref = this.db.collection('projects').doc();
     const now = new Date();
     const project: Omit<ProjectEntity, 'id'> = {
       userId,
       title: dto.title,
       style: dto.style,
+      outputType: dto.outputType,
+      modelId: dto.modelId,
+      ...(dto.outputType === 'video' && dto.generationType
+        ? { generationType: dto.generationType }
+        : {}),
       status: 'draft',
       photoCount: 0,
       creditsCost: 0,
       currentStep: '',
+      ...(dto.prompt ? { prompt: dto.prompt } : {}),
       createdAt: now,
       updatedAt: now,
     };

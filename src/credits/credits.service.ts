@@ -7,6 +7,10 @@ const STYLE_COSTS: Record<string, number> = {
   dream: 7,
 };
 
+const TEXT_TO_VIDEO_COST = 10;
+const IMAGE_COST = 5;
+const AUDIO_COST = 8;
+
 @Injectable()
 export class CreditsService {
   private readonly logger = new Logger(CreditsService.name);
@@ -17,7 +21,14 @@ export class CreditsService {
     return this.firebaseService.firestore;
   }
 
-  calculateCost(style: string, photoCount: number): number {
+  calculateCost(
+    style: string,
+    photoCount: number,
+    generationTypeOrOutput: 'image_to_video' | 'text_to_video' | 'image' | 'audio' = 'image_to_video',
+  ): number {
+    if (generationTypeOrOutput === 'text_to_video') return TEXT_TO_VIDEO_COST;
+    if (generationTypeOrOutput === 'image') return IMAGE_COST;
+    if (generationTypeOrOutput === 'audio') return AUDIO_COST;
     const baseCost = STYLE_COSTS[style] || 5;
     const sceneCost = Math.min(8, Math.ceil(photoCount * 0.6));
     return baseCost + sceneCost;
@@ -25,7 +36,25 @@ export class CreditsService {
 
   async getBalance(uid: string): Promise<number> {
     const doc = await this.db.doc(`users/${uid}`).get();
-    return doc.data()?.credits ?? 0;
+    return this.parseCredits(doc.data()?.credits);
+  }
+
+  private parseCredits(value: unknown): number {
+    if (typeof value === 'number' && !Number.isNaN(value)) return Math.floor(value);
+    if (typeof value === 'string') {
+      const n = parseInt(value, 10);
+      return Number.isNaN(n) ? 0 : n;
+    }
+    // Firestore REST / emulator may return { integerValue: "20" } or { doubleValue: 20 }
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const v = value as Record<string, unknown>;
+      if (typeof v.integerValue === 'string') {
+        const n = parseInt(v.integerValue, 10);
+        return Number.isNaN(n) ? 0 : n;
+      }
+      if (typeof v.doubleValue === 'number') return Math.floor(v.doubleValue);
+    }
+    return 0;
   }
 
   async deductCredits(
@@ -37,12 +66,20 @@ export class CreditsService {
       const userRef = this.db.doc(`users/${uid}`);
       const userDoc = await tx.get(userRef);
       const data = userDoc.data();
+      const currentCredits = this.parseCredits(data?.credits);
 
-      if (!data || data.credits < amount) {
-        throw new BadRequestException('Insufficient credits');
+      if (!userDoc.exists || currentCredits < amount) {
+        this.logger.warn(
+          `[deductCredits] uid=${uid} currentCredits=${currentCredits} amount=${amount} raw=${JSON.stringify(data?.credits)} exists=${userDoc.exists}`,
+        );
+        throw new BadRequestException(
+          userDoc.exists
+            ? `Insufficient credits (balance: ${currentCredits}, required: ${amount})`
+            : 'User not initialized. Refresh the page and try again.',
+        );
       }
 
-      tx.update(userRef, { credits: data.credits - amount });
+      tx.update(userRef, { credits: currentCredits - amount });
 
       const txRef = this.db.collection(`users/${uid}/transactions`).doc();
       tx.create(txRef, {
