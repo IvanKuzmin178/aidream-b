@@ -54,6 +54,14 @@ export class StorageService implements OnModuleInit {
     await this.bucket.file(objectPath).delete({ ignoreNotFound: true });
   }
 
+  async deleteByPrefix(prefix: string): Promise<number> {
+    const files = await this.listFiles(prefix);
+    if (files.length === 0) return 0;
+    await Promise.all(files.map((f) => this.deleteFile(f)));
+    this.logger.log(`Deleted ${files.length} files with prefix: ${prefix}`);
+    return files.length;
+  }
+
   async listFiles(prefix: string): Promise<string[]> {
     const [files] = await this.bucket.getFiles({ prefix });
     return files.map((f) => f.name);

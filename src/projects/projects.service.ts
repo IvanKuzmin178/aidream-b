@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { FirebaseService } from '../firebase/firebase.service';
+import { StorageService } from '../storage/storage.service';
 import { ProjectEntity, PhotoEntity, ProjectStatus } from './entities/project.entity';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
@@ -18,6 +19,7 @@ export class ProjectsService {
   constructor(
     private readonly firebaseService: FirebaseService,
     private readonly configService: ConfigService,
+    private readonly storageService: StorageService,
   ) {}
 
   private get db() {
@@ -103,8 +105,24 @@ export class ProjectsService {
     if (project.status === 'processing') {
       throw new BadRequestException('Cannot delete a project that is currently processing');
     }
+
+    await Promise.all([
+      this.storageService.deleteByPrefix(`projects/${projectId}/`),
+      this.deleteSubcollection(`projects/${projectId}/photos`),
+      this.deleteSubcollection(`projects/${projectId}/jobs`),
+    ]);
+
     await this.db.doc(`projects/${projectId}`).delete();
-    this.logger.log(`Project ${projectId} deleted`);
+    this.logger.log(`Project ${projectId} deleted (including GCS files and subcollections)`);
+  }
+
+  private async deleteSubcollection(path: string): Promise<void> {
+    const snap = await this.db.collection(path).limit(500).get();
+    if (snap.empty) return;
+    const batch = this.db.batch();
+    snap.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+    if (snap.size === 500) await this.deleteSubcollection(path);
   }
 
   async updateStatus(
