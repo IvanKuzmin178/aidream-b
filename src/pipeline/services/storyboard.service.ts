@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PhotoEntity } from '../../projects/entities/project.entity';
 import { ProjectEntity } from '../../projects/entities/project.entity';
 import { SceneEntity } from '../entities/scene.entity';
+import { PHOTO_PROMPT_RULES } from '../constants/photo-prompt-rules.constants';
 
 interface StylePreset {
   sceneDuration: number;
@@ -39,6 +40,7 @@ export class StoryboardService {
     const sorted = this.rankAndOrder(photos);
     const selected = sorted.slice(0, Math.min(8, sorted.length));
     const style = STYLE_PRESETS[project.style] || STYLE_PRESETS.memory;
+    const rules = PHOTO_PROMPT_RULES[project.style] || PHOTO_PROMPT_RULES.memory;
 
     this.logger.log(
       `Building storyboard: ${selected.length} photos, style=${project.style}`,
@@ -51,7 +53,7 @@ export class StoryboardService {
           index: 0,
           type: 'transition' as const,
           inputPhotos: [selected[0].objectPath, selected[1].objectPath],
-          prompt: this.buildPrompt(selected[0], selected[1], style),
+          prompt: this.buildPrompt(selected[0], selected[1], style, rules),
           generationMode: 'first_last_frame' as const,
           duration: style.sceneDuration,
         },
@@ -66,7 +68,7 @@ export class StoryboardService {
         inputPhotos: nextPhoto
           ? [photo.objectPath, nextPhoto.objectPath]
           : [photo.objectPath],
-        prompt: this.buildPrompt(photo, nextPhoto, style),
+        prompt: this.buildPrompt(photo, nextPhoto, style, rules),
         generationMode: nextPhoto
           ? 'first_last_frame' as const
           : 'image_to_video' as const,
@@ -86,7 +88,22 @@ export class StoryboardService {
     photo: PhotoEntity,
     nextPhoto: PhotoEntity | undefined,
     style: StylePreset,
+    rules: { singleSceneSuffix: string; transitionSceneSuffix: string },
   ): string {
+    const desc1 = photo.aiDescription?.trim();
+    const desc2 = nextPhoto?.aiDescription?.trim();
+
+    if (nextPhoto && (desc1 || desc2)) {
+      const d1 = desc1 || 'the first moment';
+      const d2 = desc2 || 'the second moment';
+      return rules.transitionSceneSuffix
+        .replace('{description1}', d1)
+        .replace('{description2}', d2);
+    }
+    if (!nextPhoto && desc1) {
+      return rules.singleSceneSuffix.replace('{description}', desc1);
+    }
+
     const base = `${style.promptPrefix} the scene. ${style.cameraMotion}. ${style.colorGrade}.`;
     if (nextPhoto) {
       return `${base} Smooth transition between two moments. Gentle camera movement.`;

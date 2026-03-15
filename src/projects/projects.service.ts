@@ -165,6 +165,14 @@ export class ProjectsService {
     return ref.id;
   }
 
+  async updatePhoto(
+    projectId: string,
+    photoId: string,
+    updates: Partial<Pick<PhotoEntity, 'qualityScore' | 'aiDescription' | 'isSelected'>>,
+  ): Promise<void> {
+    await this.db.doc(`projects/${projectId}/photos/${photoId}`).update(updates);
+  }
+
   async reorderPhotos(
     projectId: string,
     photoIds: string[],

@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, NotImplementedException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { FirebaseService } from '../firebase/firebase.service';
 import { StorageService } from '../storage/storage.service';
@@ -51,9 +51,105 @@ export class PipelineService {
     if (genType === 'text_to_video') {
       return this.startTextToVideo(projectId, userId, project);
     }
-    return this.startImageToVideo(projectId, userId, project);
+    if (genType === 'story_video') {
+      return this.startStoryVideo(projectId, userId, project);
+    }
+    if (genType === 'image_to_video' || genType === 'first_last_frame') {
+      return this.startStandardVideo(projectId, userId, project);
+    }
+    throw new BadRequestException(`Unknown generation type: ${genType}`);
   }
 
+  /**
+   * TODO: Story Video - preprocess → storyboard → N scenes → assembly.
+   * 2–10 photos, hardcoded prompts by style, no user prompt.
+   */
+  private async startStoryVideo(
+    _projectId: string,
+    _userId: string,
+    _project: Awaited<ReturnType<ProjectsService['get']>>,
+  ): Promise<{ jobId: string }> {
+    throw new NotImplementedException(
+      'Story Video mode is not implemented yet. Use Video from Photo or Video from Frames for now.',
+    );
+  }
+
+  /**
+   * Standard video modes: 1 photo (image_to_video) or 2 photos (first_last_frame) + user prompt.
+   * Direct generate_scene, no preprocess/storyboard.
+   */
+  private async startStandardVideo(
+    projectId: string,
+    userId: string,
+    project: Awaited<ReturnType<ProjectsService['get']>>,
+  ): Promise<{ jobId: string }> {
+    await this.usersService.getOrCreateUser(userId);
+    if (project.status !== 'uploaded') {
+      throw new BadRequestException(
+        'Project must have uploaded photos before generating',
+      );
+    }
+    if (!project.prompt?.trim()) {
+      throw new BadRequestException('A text prompt is required for video generation');
+    }
+
+    const genType = project.generationType!;
+    const expectedPhotos = genType === 'image_to_video' ? 1 : 2;
+    if (project.photoCount !== expectedPhotos) {
+      throw new BadRequestException(
+        `${genType === 'image_to_video' ? '1' : '2'} photo(s) required. Current: ${project.photoCount}`,
+      );
+    }
+
+    const photos = await this.projectsService.getPhotos(projectId);
+    const sorted = photos.sort((a, b) => a.order - b.order);
+    const inputPaths = sorted.slice(0, expectedPhotos).map((p) => p.objectPath);
+
+    const cost = this.creditsService.calculateCost(
+      project.style,
+      project.photoCount,
+      genType,
+    );
+    await this.creditsService.deductCredits(userId, cost, projectId);
+    this.logger.log(
+      `[${projectId}] Credits deducted: ${cost} (${genType}, style=${project.style})`,
+    );
+
+    await this.projectsService.updateStatus(projectId, 'processing', {
+      creditsCost: cost,
+      currentStep: 'generating 0/1',
+    });
+
+    const style = { memory: 5, cinematic: 6, dream: 5 }[project.style] ?? 5;
+
+    const jobRef = this.db.collection(`projects/${projectId}/jobs`).doc();
+    await jobRef.set({
+      type: 'generate_scene',
+      status: 'queued',
+      sceneIndex: 0,
+      prompt: project.prompt,
+      duration: style,
+      inputPaths,
+      modelId: project.modelId,
+      retryCount: 0,
+      createdAt: new Date(),
+    });
+
+    await this.queueService.enqueue({
+      url: '/internal/pipeline/generate-scene',
+      body: { projectId, jobId: jobRef.id, sceneIndex: 0 },
+    });
+
+    this.logger.log(
+      `[${projectId}] Pipeline queued (${genType}), job=${jobRef.id}`,
+    );
+    return { jobId: jobRef.id };
+  }
+
+  /**
+   * Story Video pipeline: preprocess → storyboard → N scenes → assembly.
+   * Used by story_video mode (TODO).
+   */
   private async startImageToVideo(
     projectId: string,
     userId: string,

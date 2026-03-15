@@ -42,6 +42,74 @@ export class VertexAiService implements OnModuleInit {
     return modelId || this.defaultModel;
   }
 
+  private get visionModel(): string {
+    return this.configService.get<string>(
+      'PHOTO_ANALYSIS_MODEL',
+      'gemini-2.0-flash-001',
+    );
+  }
+
+  /**
+   * Analyzes a photo with Gemini Vision and returns a short description
+   * for use in video prompt generation.
+   */
+  async analyzePhotoForVideo(
+    imageGcsPath: string,
+    analysisPrompt: string,
+  ): Promise<string> {
+    const model = this.visionModel;
+    const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${model}:generateContent`;
+
+    const imageBase64 = await this.downloadAsBase64(imageGcsPath);
+    const mimeType = this.guessMimeType(imageGcsPath);
+
+    const body = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: imageBase64,
+              },
+            },
+            { text: analysisPrompt },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.4,
+        maxOutputTokens: 256,
+      },
+    };
+
+    this.logger.log(`[Gemini] Analyzing photo for video prompt: ${imageGcsPath}`);
+    const token = await this.getAccessToken();
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      this.logger.error(`[Gemini] Analysis FAILED: ${response.status} ${text.slice(0, 300)}`);
+      throw new Error(`Photo analysis failed: ${response.status} ${text}`);
+    }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!text) {
+      throw new Error('No text in Gemini response');
+    }
+    this.logger.log(`[Gemini] Description: "${text.slice(0, 80)}..."`);
+    return text;
+  }
+
   async generateVideo(
     scene: SceneEntity,
     modelId?: string,

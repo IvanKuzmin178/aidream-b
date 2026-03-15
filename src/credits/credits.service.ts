@@ -24,11 +24,28 @@ export class CreditsService {
   calculateCost(
     style: string,
     photoCount: number,
-    generationTypeOrOutput: 'image_to_video' | 'text_to_video' | 'image' | 'audio' = 'image_to_video',
+    generationTypeOrOutput:
+      | 'image_to_video'
+      | 'text_to_video'
+      | 'story_video'
+      | 'first_last_frame'
+      | 'image'
+      | 'audio' = 'image_to_video',
   ): number {
     if (generationTypeOrOutput === 'text_to_video') return TEXT_TO_VIDEO_COST;
     if (generationTypeOrOutput === 'image') return IMAGE_COST;
     if (generationTypeOrOutput === 'audio') return AUDIO_COST;
+    if (
+      generationTypeOrOutput === 'image_to_video' ||
+      generationTypeOrOutput === 'first_last_frame'
+    ) {
+      return 9; // Standard video: 1 photo or 2 frames + prompt
+    }
+    if (generationTypeOrOutput === 'story_video') {
+      const baseCost = STYLE_COSTS[style] || 5;
+      const sceneCost = Math.min(8, Math.ceil(photoCount * 0.6));
+      return baseCost + sceneCost;
+    }
     const baseCost = STYLE_COSTS[style] || 5;
     const sceneCost = Math.min(8, Math.ceil(photoCount * 0.6));
     return baseCost + sceneCost;

@@ -1,5 +1,9 @@
 export type ProjectStyle = 'memory' | 'cinematic' | 'dream';
-export type GenerationType = 'image_to_video' | 'text_to_video';
+export type GenerationType =
+  | 'image_to_video'
+  | 'text_to_video'
+  | 'story_video'
+  | 'first_last_frame';
 export type OutputType = 'video' | 'image' | 'audio';
 export type ProjectStatus =
   | 'draft'
@@ -40,4 +44,6 @@ export interface PhotoEntity {
   order: number;
   qualityScore?: number;
   isSelected?: boolean;
+  /** AI-generated description for video prompt (from Gemini Vision) */
+  aiDescription?: string;
 }

@@ -13,7 +13,7 @@ export class CreateProjectDto {
   outputType!: OutputType;
 
   @IsOptional()
-  @IsIn(['image_to_video', 'text_to_video'])
+  @IsIn(['image_to_video', 'text_to_video', 'story_video', 'first_last_frame'])
   generationType?: GenerationType;
 
   @IsString()
