@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { StorageService } from '../../storage/storage.service';
 import { ProjectsService } from '../../projects/projects.service';
+import { getStoragePrefix } from '../../projects/utils/storage-path.util';
 
 @Injectable()
 export class AssemblyService {
@@ -24,22 +25,27 @@ export class AssemblyService {
       throw new Error('No clips to assemble');
     }
 
+    const project = await this.projectsService.getById(projectId);
+    const prefix = getStoragePrefix(project);
+    const finalPath = `${prefix}/output/final.mp4`;
+
     if (clipPaths.length === 1) {
-      const finalPath = `projects/${projectId}/output/final.mp4`;
       await this.storageService.copyFile(clipPaths[0], finalPath);
+
+      const sceneDuration = { memory: 5, cinematic: 6, dream: 5 }[project.style] ?? 5;
 
       await this.projectsService.updateStatus(projectId, 'completed', {
         resultVideoPath: finalPath,
+        resultDuration: sceneDuration,
         currentStep: 'completed',
       });
 
-      this.logger.log(`Single-clip assembly complete: ${finalPath}`);
+      this.logger.log(`Single-clip assembly complete: ${finalPath} (~${sceneDuration}s)`);
       return finalPath;
     }
 
     // MVP: use first clip as the "final" video, since we can't do real concatenation
     // without ffmpeg. Phase 2 adds proper ffmpeg-based assembly.
-    const finalPath = `projects/${projectId}/output/final.mp4`;
     await this.storageService.copyFile(clipPaths[0], finalPath);
 
     await this.projectsService.updateStatus(projectId, 'completed', {

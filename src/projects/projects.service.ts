@@ -11,6 +11,8 @@ import { StorageService } from '../storage/storage.service';
 import { ProjectEntity, PhotoEntity, ProjectStatus } from './entities/project.entity';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
+import { buildStoragePrefix } from './utils/storage-path.util';
+import { getStoragePrefix } from './utils/storage-path.util';
 
 @Injectable()
 export class ProjectsService {
@@ -27,31 +29,20 @@ export class ProjectsService {
   }
 
   async create(userId: string, dto: CreateProjectDto): Promise<ProjectEntity> {
-    const maxConcurrent = this.configService.get<number>('MAX_CONCURRENT_PROJECTS', 3);
-    const activeSnap = await this.db
-      .collection('projects')
-      .where('userId', '==', userId)
-      .where('status', 'in', ['draft', 'uploaded', 'processing'])
-      .get();
-
-    if (activeSnap.size >= maxConcurrent) {
-      throw new BadRequestException(
-        `Maximum ${maxConcurrent} active projects allowed`,
-      );
-    }
-
     if (dto.outputType === 'video' && !dto.generationType) {
       throw new BadRequestException('generationType is required when outputType is video');
     }
 
     const ref = this.db.collection('projects').doc();
     const now = new Date();
+    const storagePrefix = buildStoragePrefix(userId, ref.id, dto.title);
     const project: Omit<ProjectEntity, 'id'> = {
       userId,
       title: dto.title,
       style: dto.style,
       outputType: dto.outputType,
       modelId: dto.modelId,
+      storagePrefix,
       ...(dto.outputType === 'video' && dto.generationType
         ? { generationType: dto.generationType }
         : {}),
@@ -92,6 +83,11 @@ export class ProjectsService {
     return { id: doc.id, ...doc.data() } as ProjectEntity;
   }
 
+  async getStoragePrefix(projectId: string): Promise<string> {
+    const project = await this.getById(projectId);
+    return getStoragePrefix(project);
+  }
+
   async update(
     projectId: string,
     userId: string,
@@ -116,8 +112,9 @@ export class ProjectsService {
       throw new BadRequestException('Cannot delete a project that is currently processing');
     }
 
+    const storagePrefix = getStoragePrefix(project);
     await Promise.all([
-      this.storageService.deleteByPrefix(`projects/${projectId}/`),
+      this.storageService.deleteByPrefix(`${storagePrefix}/`),
       this.deleteSubcollection(`projects/${projectId}/photos`),
       this.deleteSubcollection(`projects/${projectId}/jobs`),
     ]);

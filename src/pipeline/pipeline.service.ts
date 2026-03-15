@@ -11,6 +11,7 @@ import { StoryboardService } from './services/storyboard.service';
 import { VertexAiService } from './services/vertex-ai.service';
 import { AssemblyService } from './services/assembly.service';
 import { JobEntity, JobStatus } from './entities/job.entity';
+import { getStoragePrefix } from '../projects/utils/storage-path.util';
 
 @Injectable()
 export class PipelineService {
@@ -318,15 +319,20 @@ export class PipelineService {
 
       const project = await this.projectsService.getById(projectId);
       const modelId = jobData.modelId || project.modelId;
+      const storagePrefix = getStoragePrefix(project);
 
-      const operationId = await this.vertexAiService.generateVideo({
-        index: sceneIndex,
-        type: hasPhotos && jobData.inputPaths.length > 1 ? 'transition' : 'single',
-        inputPhotos: jobData.inputPaths || [],
-        prompt: jobData.prompt || '',
-        generationMode: mode,
-        duration,
-      }, modelId);
+      const operationId = await this.vertexAiService.generateVideo(
+        {
+          index: sceneIndex,
+          type: hasPhotos && jobData.inputPaths.length > 1 ? 'transition' : 'single',
+          inputPhotos: jobData.inputPaths || [],
+          prompt: jobData.prompt || '',
+          generationMode: mode,
+          duration,
+        },
+        modelId,
+        storagePrefix,
+      );
 
       this.logger.log(`[${projectId}]   Veo operation ID: ${operationId}`);
       this.logger.log(`[${projectId}]   Check in GCP Console: https://console.cloud.google.com/vertex-ai/studio/media?project=${this.configService.get('GCP_PROJECT_ID')}`);
@@ -396,7 +402,8 @@ export class PipelineService {
 
       this.logger.log(`[${projectId}]   Scene ${jobData.sceneIndex}: DONE! videoUri=${result.videoGcsUri}`);
 
-      const clipPath = `projects/${projectId}/clips/scene-${jobData.sceneIndex}.mp4`;
+      const prefix = getStoragePrefix(project);
+      const clipPath = `${prefix}/clips/scene-${jobData.sceneIndex}.mp4`;
       await this.vertexAiService.saveClipToGcs(result.videoGcsUri!, clipPath);
       this.logger.log(`[${projectId}]   Clip saved: ${clipPath}`);
 
@@ -410,7 +417,7 @@ export class PipelineService {
 
       const proj = await this.projectsService.getById(projectId);
       if (proj.generationType === 'text_to_video') {
-        const finalPath = `projects/${projectId}/output/final.mp4`;
+        const finalPath = `${getStoragePrefix(proj)}/output/final.mp4`;
         await this.storageService.copyFile(clipPath, finalPath);
         await this.projectsService.updateStatus(projectId, 'completed', {
           resultVideoPath: finalPath,
@@ -442,8 +449,10 @@ export class PipelineService {
         throw new Error('Missing prompt or modelId for image generation');
       }
 
+      const project = await this.projectsService.getById(projectId);
+      const prefix = getStoragePrefix(project);
       const result = await this.vertexAiService.generateImage(prompt, modelId);
-      const destPath = `projects/${projectId}/output/image.png`;
+      const destPath = `${prefix}/output/image.png`;
       await this.vertexAiService.saveMediaToGcs(
         result.bytesBase64,
         destPath,
@@ -479,8 +488,10 @@ export class PipelineService {
         throw new Error('Missing prompt or modelId for audio generation');
       }
 
+      const project = await this.projectsService.getById(projectId);
+      const prefix = getStoragePrefix(project);
       const result = await this.vertexAiService.generateAudio(prompt, modelId);
-      const destPath = `projects/${projectId}/output/audio.wav`;
+      const destPath = `${prefix}/output/audio.wav`;
       await this.vertexAiService.saveMediaToGcs(
         result.bytesBase64,
         destPath,
@@ -611,14 +622,17 @@ export class PipelineService {
       .where('type', '==', 'generate_scene')
       .get();
 
-    const checkJobs = await this.db
+    const checkJobsSnap = await this.db
       .collection(`projects/${projectId}/jobs`)
       .where('type', '==', 'check_generation')
-      .where('status', '==', 'completed')
       .get();
 
+    const completedCount = checkJobsSnap.docs.filter(
+      (d) => d.data().status === 'completed',
+    ).length;
+
     await this.projectsService.updateStatus(projectId, 'processing', {
-      currentStep: `generating ${checkJobs.size}/${genJobs.size}`,
+      currentStep: `generating ${completedCount}/${genJobs.size}`,
     });
   }
 
@@ -626,13 +640,14 @@ export class PipelineService {
     const checkJobs = await this.db
       .collection(`projects/${projectId}/jobs`)
       .where('type', '==', 'check_generation')
-      .where('status', '==', 'completed')
-      .orderBy('sceneIndex')
       .get();
 
     return checkJobs.docs
-      .map((d) => d.data().outputPath as string)
-      .filter(Boolean);
+      .filter((d) => d.data().status === 'completed')
+      .map((d) => ({ sceneIndex: d.data().sceneIndex as number, path: d.data().outputPath as string }))
+      .filter((x) => x.path)
+      .sort((a, b) => a.sceneIndex - b.sceneIndex)
+      .map((x) => x.path);
   }
 
   private async enqueueAssembly(projectId: string): Promise<void> {

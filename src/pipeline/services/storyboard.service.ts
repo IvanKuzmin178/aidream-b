@@ -41,8 +41,22 @@ export class StoryboardService {
     const style = STYLE_PRESETS[project.style] || STYLE_PRESETS.memory;
 
     this.logger.log(
-      `Building storyboard: ${selected.length} scenes, style=${project.style}`,
+      `Building storyboard: ${selected.length} photos, style=${project.style}`,
     );
+
+    // For exactly 2 photos: single transition scene (start frame → end frame)
+    if (selected.length === 2) {
+      return [
+        {
+          index: 0,
+          type: 'transition' as const,
+          inputPhotos: [selected[0].objectPath, selected[1].objectPath],
+          prompt: this.buildPrompt(selected[0], selected[1], style),
+          generationMode: 'first_last_frame' as const,
+          duration: style.sceneDuration,
+        },
+      ];
+    }
 
     return selected.map((photo, i) => {
       const nextPhoto = selected[i + 1];

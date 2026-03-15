@@ -339,9 +339,10 @@ https://console.cloud.google.com/storage/browser/aidream-media-aidream-dev?proje
 
 Ключевые пути:
 - `projects/<id>/photos/` — загруженные фото
-- `projects/<id>/clips/` — сгенерированные клипы
+- `projects/<id>/veo-output/` — raw output Veo для проекта (Vertex AI пишет сюда)
+- `projects/<id>/clips/` — скопированные клипы (после генерации)
 - `projects/<id>/output/` — финальное видео
-- `veo-output/` — raw output от Veo (с timestamp-подпапками)
+- `veo-output/` — устаревшая корневая папка (старые проекты); новые пишут в `projects/<id>/veo-output/`
 
 ### 5. Cloud Logging (логи бэкенда в проде)
 

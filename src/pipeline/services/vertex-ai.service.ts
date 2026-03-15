@@ -42,7 +42,11 @@ export class VertexAiService implements OnModuleInit {
     return modelId || this.defaultModel;
   }
 
-  async generateVideo(scene: SceneEntity, modelId?: string): Promise<string> {
+  async generateVideo(
+    scene: SceneEntity,
+    modelId?: string,
+    storagePrefix?: string,
+  ): Promise<string> {
     const model = this.modelOrDefault(modelId);
     const endpoint = `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.projectId}/locations/${this.region}/publishers/google/models/${model}:predictLongRunning`;
 
@@ -57,7 +61,7 @@ export class VertexAiService implements OnModuleInit {
       }
     }
 
-    const body = await this.buildRequestBody(scene);
+    const body = await this.buildRequestBody(scene, storagePrefix);
     this.logger.log(`[Veo] Sending predictLongRunning request to ${model}...`);
     this.logger.log(`[Veo]   prompt: "${scene.prompt.slice(0, 100)}..."`);
     this.logger.log(`[Veo]   params: sampleCount=${body.parameters.sampleCount}, duration=${body.parameters.durationSeconds}s, storageUri=${body.parameters.storageUri}`);
@@ -236,9 +240,11 @@ export class VertexAiService implements OnModuleInit {
     this.logger.log(`Media saved: ${file.name}`);
   }
 
-  private async buildRequestBody(scene: SceneEntity) {
+  private async buildRequestBody(scene: SceneEntity, storagePrefix?: string) {
     const bucket = this.configService.get('GCS_BUCKET');
-    const storageUri = `gs://${bucket}/veo-output`;
+    const storageUri = storagePrefix
+      ? `gs://${bucket}/${storagePrefix}/veo-output/`
+      : `gs://${bucket}/veo-output`;
 
     const instance: Record<string, any> = {
       prompt: scene.prompt,

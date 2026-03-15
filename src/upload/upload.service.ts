@@ -41,9 +41,10 @@ export class UploadService {
       }
     }
 
+    const storagePrefix = await this.projectsService.getStoragePrefix(projectId);
     return Promise.all(
       files.map(async (file) => {
-        const objectPath = `projects/${projectId}/photos/${uuidv4()}-${file.filename}`;
+        const objectPath = `${storagePrefix}/photos/${uuidv4()}-${file.filename}`;
         const signedUrl = await this.storageService.generateSignedUploadUrl(
           objectPath,
           file.contentType,

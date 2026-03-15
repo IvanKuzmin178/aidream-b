@@ -23,6 +23,7 @@ export interface ProjectEntity {
   prompt?: string;
   createdAt: Date;
   updatedAt: Date;
+  storagePrefix?: string;
   resultVideoPath?: string;
   resultImagePath?: string;
   resultAudioPath?: string;
